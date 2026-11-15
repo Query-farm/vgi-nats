@@ -101,6 +101,22 @@ func publish(nc *natsio.Conn) (time.Time, error) {
 		return time.Time{}, ctx.Err()
 	}
 
+	// A work-queue stream with a durable worker that has not pulled anything:
+	// messages() must read it without removing anything.
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: "WORK", Subjects: []string{"jobs.*"}, Retention: jetstream.WorkQueuePolicy,
+	}); err != nil {
+		return time.Time{}, err
+	}
+	for i := 1; i <= 6; i++ {
+		if _, err := js.Publish(ctx, fmt.Sprintf("jobs.%s", []string{"email", "resize"}[i%2]), []byte(fmt.Sprintf("job-%d", i))); err != nil {
+			return time.Time{}, err
+		}
+	}
+	if _, err := js.CreateConsumer(ctx, "WORK", jetstream.ConsumerConfig{Durable: "worker", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+		return time.Time{}, err
+	}
+
 	// Durable consumers with known delivery state.
 	shipper, err := js.CreateConsumer(ctx, "ORDERS", jetstream.ConsumerConfig{
 		Durable: "shipper", Description: "Ships orders", FilterSubject: "orders.*.shipped",

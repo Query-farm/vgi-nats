@@ -14,8 +14,8 @@ main worker.
 | `catalog_tables` | a dataset queried by name, with a primary key | `SELECT * FROM catalog_tables.main.countries` |
 | `copy_to_sink` | `COPY … TO` with a custom output format | `COPY t TO 'out.jsonl' (FORMAT 'copy_to_sink.jsonl_out')` |
 
-Streaming large results and calling REST APIs are covered by the main worker's
-`sequence_table` and `fetch_items`.
+Streaming large results with a resumable cursor is covered by the main worker's
+`messages` (internal/nats/scan.go); calling HTTP APIs by its monitoring functions.
 
 ## Running a recipe
 

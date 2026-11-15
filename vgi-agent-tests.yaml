@@ -32,7 +32,7 @@ tasks:
   - name: system_account
     reference_sql: SELECT account FROM nats.main.accounts() WHERE is_system
   - name: js_usage
-    check_sql: SELECT streams = 5 AND consumers = 2 AND storage_bytes > 0 FROM nats.main.account_info()
+    check_sql: SELECT streams = 6 AND consumers = 3 AND storage_bytes > 0 FROM nats.main.account_info()
   - name: account_traffic
     reference_sql: SELECT account FROM nats.main.account_stats() ORDER BY received_msgs DESC LIMIT 1
   - name: cluster_links

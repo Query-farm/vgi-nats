@@ -42,7 +42,7 @@ CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-tok
 query IIITT
 SELECT streams, consumers, api_level >= 1, max_storage_bytes IS NULL, storage_bytes > 0 FROM nats.main.account_info();
 ----
-5	2	true	true	true
+6	3	true	true	true
 
 # ---------------------------------------------------------------- streams
 
@@ -54,6 +54,7 @@ EVENTS	stream	[events.*, audit.>]	limits	memory	1
 KV_config	kv	[$KV.config.>]	limits	file	1
 OBJ_files	object_store	[$O.files.C.>, $O.files.M.>]	limits	file	1
 ORDERS	stream	[orders.>]	limits	file	1
+WORK	stream	[jobs.*]	workqueue	file	1
 
 query TIIIIIITT
 SELECT stream, messages, first_seq, last_seq, num_subjects, consumer_count, num_deleted, first_ts <= last_ts, allow_direct FROM nats.main.streams() WHERE kind = 'stream' ORDER BY stream;
@@ -61,6 +62,7 @@ SELECT stream, messages, first_seq, last_seq, num_subjects, consumer_count, num_
 BULK	25000	1	25000	7	0	0	true	false
 EVENTS	4	1	4	3	0	0	true	false
 ORDERS	10	1	10	5	2	0	true	true
+WORK	6	1	6	2	1	0	true	false
 
 query TTRTI
 SELECT stream, description, duplicate_window_seconds, discard, max_msgs FROM nats.main.streams() WHERE stream IN ('ORDERS', 'EVENTS') ORDER BY stream;
@@ -77,7 +79,7 @@ ORDERS	true
 query I
 SELECT count(*) FROM nats.main.streams(secret_name := 'natsnk');
 ----
-5
+6
 
 # ---------------------------------------------------------------- stream_subjects
 
@@ -117,6 +119,7 @@ FROM nats.main.consumers() ORDER BY consumer;
 ----
 ORDERS	audit	true	false	[]	explicit	all	NULL	0	0	10	10	0	false	true
 ORDERS	shipper	true	false	[orders.*.shipped]	explicit	all	5	3	3	2	2	0	false	false
+WORK	worker	true	false	[]	explicit	all	NULL	0	0	6	6	0	false	true
 
 query TT
 SELECT consumer, description FROM nats.main.consumers(stream := 'ORDERS') ORDER BY consumer;
@@ -138,8 +141,43 @@ SELECT consumer, delivered_stream_seq, ack_floor_stream_seq, lag FROM nats.main.
 ----
 audit	0	0	10
 shipper	3	3	2
+worker	0	0	6
 
 query I
 SELECT consumer_count FROM nats.main.streams() WHERE stream = 'ORDERS';
 ----
 2
+
+# ---------------------------------------------------------------- a work-queue stream is read without consuming it
+
+query IT
+SELECT sequence, payload_text FROM nats.main.messages('WORK') ORDER BY sequence;
+----
+1	job-1
+2	job-2
+3	job-3
+4	job-4
+5	job-5
+6	job-6
+
+query I
+SELECT sequence FROM nats.main.messages('WORK', subject := 'jobs.email') WHERE sequence > 2 ORDER BY sequence;
+----
+4
+6
+
+query I
+SELECT sequence FROM nats.main.messages('WORK', start_seq := 5, max_msgs := 1);
+----
+5
+
+query I
+SELECT count(*) FROM nats.main.messages('WORK', start_time := TIMESTAMPTZ '{NATS_BOUNDARY}');
+----
+6
+
+query IIII
+SELECT messages, consumer_count, (SELECT lag FROM nats.main.consumers(stream := 'WORK')), (SELECT delivered_stream_seq FROM nats.main.consumers(stream := 'WORK'))
+FROM nats.main.streams() WHERE stream = 'WORK';
+----
+6	1	6	0

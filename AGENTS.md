@@ -24,15 +24,23 @@ Faster loops while iterating: `make test-unit`, `make test-sql`, `make lint-expl
 cmd/vgi-nats-worker/  # main.go: the worker binary (flags -> serve.Main)
 internal/nats/
   worker.go        # assembles the catalog; register new functions in NewWorker
-  meta.go          # catalog/schema metadata + helpers (objectTags, column)
-  greet.go         # scalar example (overloads, constant arg with choices)
-  sequence.go      # table function example (named args, streaming state)
-  fetch_items.go   # REST API table function (pagination, retries, secrets)
+  meta.go          # catalog/schema metadata, categories, agent tasks + helpers
+  secret.go        # the `nats` secret -> connection (auth, TLS), connection pool, JetStream context
+  monsource.go     # monitoring source: HTTP endpoints (MONITORING_URL) or $SYS ping requests
+  monitor.go       # server_info, connections, routes, gateways, leafnodes, subscriptions, accounts, health
+  jsz.go           # jetstream_servers, jsz_streams, jsz_consumers (/jsz)
+  jetstream.go     # account_info, streams, stream_subjects, consumers, kv_buckets, object_stores, objects
+  scan.go          # messages() and kv_entries(): ephemeral-consumer or direct-get batches, cursor in state
+  pushdown.go      # pushed subject/sequence/timestamp predicates -> filter subjects, start/stop
+  exact.go         # exact re-evaluation of every pushed predicate (adapted from vgi-loki)
+  sqlparse.go      # parser for the SQL the SDK renders for expression filters
+  subject.go       # subject_matches scalar (offline)
+  simple.go        # shared request/response table-function shape + Arrow building
   version.go       # the worker version (checked against release tags)
-  *_test.go        # go test unit tests
+  *_test.go        # go test unit tests (start in-process nats-servers)
 internal/serve/    # --http / --unix / stdio and logging flags, shared with recipes
 test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
+test/fixture/natsfixture/  # embedded nats-server fixture (JetStream, SYS + APP accounts, token server, data)
 examples/          # recipes (one package main, served by bin/recipes <name>)
 ci/                # integration harness used by `make test-sql` and CI
 scripts/           # vgi_template.py (init / template-diff)
@@ -41,8 +49,9 @@ vgi-agent-tests.yaml  # private graders for the agent test tasks
 
 ## Recipe: add a function
 
-1. Create `internal/nats/<name>.go`. Copy the closest example: `greet.go` for a
-   scalar, `sequence.go` for a generator, `fetch_items.go` for an API.
+1. Create `internal/nats/<name>.go`. Copy the closest example: `subject.go` for a
+   scalar, `monitor.go` / `jetstream.go` (the `simpleFunc` shape) for a request/response
+   call, `scan.go` for a stream read with pushdown.
 2. Declare arguments as a struct with `vgi:"..."` tags. Use `pos=N` for positional
    arguments and `default=V` (no `pos`) for named ones; add `ge=`, `le=`, `pattern=` or
    `choices='a,b'` constraints. Scalar column arguments are `*array.String` (etc.) fields
@@ -63,8 +72,8 @@ Then, for every new function:
    (`nats.main.fn(...)`): project, filter or aggregate rather than `SELECT *`.
 2. **Executable examples:** if the function is deterministic and needs no network,
    add an `executable_examples` entry with `ORDER BY` and an `expected_result`.
-3. **SQL test:** add cases to `test/sql/nats.test`, or a new `test/sql/<name>.test`
-   with the same header (`require vgi`, `require-env NATS_WORKER`, then `ATTACH`).
+3. **SQL test:** add cases to the closest `test/sql/*.test`, or a new `test/sql/<name>.test`
+   with the same header (`require vgi`, the `require-env NATS_*` lines, `ATTACH`, then the secrets).
    Avoid expected-error text that depends on SDK wording; use `<REGEX>:.*` for errors you
    don't control.
 4. **Unit test** for any non-trivial logic.
@@ -140,8 +149,9 @@ v0.42.x speaks the same protocol). See
 - **State must be serializable.** Table-function state (the `S` in `TypedTableFunc[S]`) is gob-encoded into the HTTP continuation token between batches, because each batch can be served by a different request or process. Keep the cursor in *exported* fields (gob silently drops unexported ones, so the scan would restart from row 0), keep it small, and never put secrets in it.
 - **Examples must be deterministic.** Add `ORDER BY`, and no `now()`, random values or
   network. Examples that hit a live API go in `examples`, not `executable_examples`.
-- **Credentials.** Read them from a DuckDB secret first (`CREATE SECRET (TYPE nats_api, …)`),
-  then from an environment variable. Never put them in logs, examples or the repo, and
+- **Credentials.** Read them from the `nats` DuckDB secret
+  (`CREATE SECRET (TYPE nats, SERVERS …, USER/PASSWORD | TOKEN | NKEY_SEED | CREDS)`), never from
+  environment variables or ~/.nats contexts. Never put them in logs, examples or the repo, and
   keep them out of table-function state unless the state rule above says
   the SDK encrypts it. Workers that need real credentials set `execute: false` on the metadata check.
 - **Errors.** Raise errors with a clear message. For HTTP failures, include the status
@@ -185,10 +195,35 @@ v0.42.x speaks the same protocol). See
   dependency ships to every user of the worker.
 - Gates: `gofmt`, `go vet`, `golangci-lint` (config in `.golangci.yml`), `go test`.
 
+## NATS specifics
+
+- **Read-only, always.** No publish, no ack, no purge/delete of messages, no durable consumers.
+  Scans create ephemeral `AckNone` consumers on limits-retention streams and delete them after
+  each batch; work-queue and interest streams are read with `STREAM.MSG.GET` (`ScanState.Direct`)
+  because any consumer there takes part in retention. Keep it that way.
+- **DuckDB does not re-check pushed filters.** `messages` declares filter pushdown, so every
+  pushed predicate is evaluated again in `exact.go`. A new column needs a case in
+  `rowEnv.column`; a filter the evaluator cannot handle must fail loudly, never pass rows.
+- **vgi-go 0.42.0 timestamp filter bug:** a pushed `timestamp` comparison fails in a session
+  whose TimeZone is not UTC (the literal carries the session zone, the column UTC). The SQL tests
+  run in UTC; the README documents the `start_time` workaround.
+- **`offset` is a reserved word** (as an argument name); `connections` uses `skip`.
+- **Monitoring has two sources** (`monsource.go`): HTTP when `MONITORING_URL` is set, otherwise
+  `$SYS.REQ.SERVER.PING.*`, which needs a system-account user and gathers one reply per server
+  (`SysGather` / `SysQuiet`). Every monitoring function must work in both modes; test both.
+- **Several secrets in a test**: give all but the default a `SCOPE`, or DuckDB picks any one
+  of them for calls without `secret_name`.
+- **The fixture** (`test/fixture/natsfixture`) embeds nats-server; it is a test dependency
+  only, not linked into the worker. Changing its data changes expected values across
+  `test/sql/*.test`.
+- **Messaging vocabulary**: `messages` columns follow the shared contract in the README
+  (`sequence`, `key`, `payload`, `payload_text`, `payload_bytes`, `headers`, `redelivered`), so
+  they UNION with vgi-rabbitmq, vgi-kafka, vgi-pubsub. Do not rename them.
+
 ## Useful prompts
 
 - "Add a scalar `slugify(text VARCHAR) -> VARCHAR` with full metadata and tests."
-- "Replace `fetch_items` with a table function for <API>. Map its JSON to typed columns,
-  read the token from a `nats_api` secret, and add mock-server tests."
+- "Add a `raft_groups()` function over `/raftz` (HTTP and `$SYS.REQ.SERVER.PING.RAFTZ`), with
+  metadata, fixture-backed SQL tests in both modes, and an agent task."
 - "Add a catalog table `countries` (code, name) with a primary key, following
   `examples/catalog_tables`."

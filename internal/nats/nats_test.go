@@ -241,8 +241,7 @@ func TestScanPagesExactlyOnceAndLeavesNoConsumer(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, m := range msgs {
-				md, _ := m.Metadata()
-				seqs = append(seqs, md.Sequence.Stream)
+				seqs = append(seqs, m.Seq)
 			}
 		}
 		return seqs
@@ -308,7 +307,7 @@ func TestKVLatestPerKey(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, m := range msgs {
-		got[m.Subject()] = string(m.Data())
+		got[m.Subject] = string(m.Data)
 	}
 	if got["$KV.b.k1"] != "c" || got["$KV.b.k2"] != "b" {
 		t.Fatalf("latest values: %v", got)
@@ -342,4 +341,68 @@ system_account: SYS
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func TestWorkQueueStreamIsReadDirectlyAndKeepsItsMessages(t *testing.T) {
+	s := startServer(t, "")
+	c := &config{Servers: s.ClientURL()}
+	js, err := c.jetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "WQ", Subjects: []string{"wq.*"}, Retention: jetstream.WorkQueuePolicy}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		subj := "wq.a"
+		if i%2 == 1 {
+			subj = "wq.b"
+		}
+		if _, err := js.Publish(ctx, subj, []byte{byte(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := js.CreateConsumer(ctx, "WQ", jetstream.ConsumerConfig{Durable: "worker", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+		t.Fatal(err)
+	}
+	stop, direct, err := stopSeqOf(ctx, c, "WQ")
+	if err != nil || !direct || stop != 30 {
+		t.Fatalf("stopSeqOf: %d %v %v", stop, direct, err)
+	}
+	old := BatchMsgs
+	BatchMsgs = 7
+	defer func() { BatchMsgs = old }()
+	read := func(st *ScanState) int {
+		n := 0
+		for i := 0; !st.Done && i < 50; i++ {
+			msgs, err := fetchBatch(ctx, c, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n += len(msgs)
+		}
+		return n
+	}
+	if n := read(&ScanState{Stream: "WQ", StopSeq: stop, Remaining: -1, Direct: true}); n != 30 {
+		t.Fatalf("read %d of 30", n)
+	}
+	if n := read(&ScanState{Stream: "WQ", Filters: []string{"wq.b"}, StopSeq: stop, Remaining: -1, Direct: true}); n != 15 {
+		t.Fatalf("filtered read %d of 15", n)
+	}
+	if n := read(&ScanState{Stream: "WQ", NextSeq: 25, StopSeq: stop, Remaining: 3, Direct: true}); n != 3 {
+		t.Fatalf("bounded read %d of 3", n)
+	}
+	st, err := js.Stream(ctx, "WQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := st.Info(ctx)
+	if info.State.Msgs != 30 || info.State.Consumers != 1 {
+		t.Fatalf("work queue changed: %d msgs, %d consumers", info.State.Msgs, info.State.Consumers)
+	}
+	cons, _ := js.Consumer(ctx, "WQ", "worker")
+	if ci, _ := cons.Info(ctx); ci.NumPending != 30 || ci.Delivered.Stream != 0 {
+		t.Fatalf("durable consumer moved: pending %d delivered %d", ci.NumPending, ci.Delivered.Stream)
+	}
 }

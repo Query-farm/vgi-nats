@@ -194,12 +194,12 @@ true
 query TIII
 SELECT enabled, streams, consumers, accounts FROM nats.main.jetstream_servers();
 ----
-true	5	2	1
+true	6	3	1
 
 query TI
 SELECT enabled, streams FROM nats.main.jetstream_servers(secret_name := 'natssys');
 ----
-true	5
+true	6
 
 query TTIIII
 SELECT account, stream, messages, first_seq, last_seq, consumer_count FROM nats.main.jsz_streams() ORDER BY stream;
@@ -209,12 +209,14 @@ APP	EVENTS	4	1	4	0
 APP	KV_config	6	1	6	0
 APP	OBJ_files	7	1	9	0
 APP	ORDERS	10	1	10	2
+APP	WORK	6	1	6	1
 
 query TTTIIII
 SELECT account, stream, consumer, delivered_stream_seq, ack_floor_stream_seq, num_pending, lag FROM nats.main.jsz_consumers(secret_name := 'natssys') ORDER BY consumer;
 ----
 APP	ORDERS	audit	0	0	10	10
 APP	ORDERS	shipper	3	3	2	2
+APP	WORK	worker	0	0	6	6
 
 query I
 SELECT count(*) FROM nats.main.jsz_streams(account := 'SYS');
@@ -252,4 +254,4 @@ SELECT count(*) FROM nats.main.jsz_consumers(account := 'SYS');
 query I
 SELECT count(*) FROM nats.main.jsz_consumers(account := 'APP');
 ----
-2
+3

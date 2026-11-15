@@ -17,6 +17,7 @@
 //	                         a time boundary is printed between seq 5 and 6
 //	EVENTS  events.*, audit.>  memory  4 messages
 //	BULK    bulk.<n%7>  file  25,000 messages (multi-batch scans)
+//	WORK    jobs.*  work-queue  6 messages, durable consumer "worker" with nothing pulled
 //	consumers on ORDERS: shipper (filter orders.*.shipped, 1 delivered+acked), audit (nothing delivered)
 //	KV config (history 5): app.color red->blue->green, app.size 10, feature.x on then deleted
 //	object store files: hello.txt, data.bin (300,000 bytes, 3 chunks), old.txt (deleted)

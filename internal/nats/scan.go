@@ -24,6 +24,7 @@ import (
 	"github.com/Query-farm/vgi-go/vgi"
 	"github.com/Query-farm/vgi-rpc-go/vgirpc"
 	"github.com/apache/arrow-go/v18/arrow"
+	natsio "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 )
@@ -54,11 +55,91 @@ type ScanState struct {
 	SecretName     string
 	// FiltersJSON holds the pushed predicates, evaluated exactly on every row.
 	FiltersJSON string
+	// Direct reads message by message with the stream "get message" API
+	// instead of a consumer: used for work-queue and interest streams, where
+	// even an AckNone consumer would take part in retention.
+	Direct bool
+}
+
+// rec is one stored message, from either read path.
+type rec struct {
+	Seq     uint64
+	Subject string
+	Time    time.Time
+	Data    []byte
+	Header  map[string][]string
+}
+
+func recOf(m jetstream.Msg) (rec, error) {
+	md, err := m.Metadata()
+	if err != nil {
+		return rec{}, err
+	}
+	return rec{Seq: md.Sequence.Stream, Subject: m.Subject(), Time: md.Timestamp, Data: m.Data(), Header: m.Headers()}, nil
+}
+
+// fetchDirect reads the next batch with STREAM.MSG.GET next_by_subj requests:
+// no consumer is created, so retention cannot be affected.
+func fetchDirect(ctx context.Context, c *config, st *ScanState) ([]rec, error) {
+	js, err := c.jetStream()
+	if err != nil {
+		return nil, err
+	}
+	stream, err := js.Stream(ctx, st.Stream)
+	if err != nil {
+		return nil, streamErr(st.Stream, err)
+	}
+	subj := ">"
+	if len(st.Filters) == 1 {
+		subj = st.Filters[0]
+	}
+	next := max(st.NextSeq, 1)
+	var out []rec
+	for len(out) < BatchMsgs && (st.Remaining < 0 || int64(len(out)) < st.Remaining) {
+		if next > st.StopSeq {
+			st.Done = true
+			break
+		}
+		m, err := stream.GetMsg(ctx, next, jetstream.WithGetMsgSubject(subj))
+		if err != nil {
+			if errors.Is(err, jetstream.ErrMsgNotFound) {
+				st.Done = true
+				break
+			}
+			return nil, jsError(err)
+		}
+		next = m.Sequence + 1
+		if m.Sequence > st.StopSeq {
+			st.Done = true
+			break
+		}
+		if st.StartTime != nil && m.Time.Before(*st.StartTime) {
+			continue
+		}
+		if len(st.Filters) > 1 && !anyMatch(st.Filters, m.Subject) {
+			continue
+		}
+		out = append(out, rec{Seq: m.Sequence, Subject: m.Subject, Time: m.Time, Data: m.Data, Header: m.Header})
+	}
+	st.NextSeq = next
+	if st.Remaining >= 0 {
+		st.Remaining -= int64(len(out))
+		if st.Remaining <= 0 {
+			st.Done = true
+		}
+	}
+	if next > st.StopSeq {
+		st.Done = true
+	}
+	return out, nil
 }
 
 // fetchBatch reads the next batch for st. It returns the messages in
 // sequence order (at most StopSeq) and updates the cursor.
-func fetchBatch(ctx context.Context, c *config, st *ScanState) ([]jetstream.Msg, error) {
+func fetchBatch(ctx context.Context, c *config, st *ScanState) ([]rec, error) {
+	if st.Direct {
+		return fetchDirect(ctx, c, st)
+	}
 	js, err := c.jetStream()
 	if err != nil {
 		return nil, err
@@ -134,14 +215,14 @@ func fetchBatch(ctx context.Context, c *config, st *ScanState) ([]jetstream.Msg,
 		}
 	}
 	// Apply the stop sequence, the skip cursor (LastPer) and the row budget.
-	kept := out[:0]
+	kept := make([]rec, 0, len(out))
 	maxSeq := st.NextSeq
 	for _, m := range out {
-		md, err := m.Metadata()
+		r, err := recOf(m)
 		if err != nil {
 			return nil, err
 		}
-		seq := md.Sequence.Stream
+		seq := r.Seq
 		if seq > st.StopSeq {
 			st.Done = true
 			continue
@@ -153,7 +234,7 @@ func fetchBatch(ctx context.Context, c *config, st *ScanState) ([]jetstream.Msg,
 			st.Done = true
 			break
 		}
-		kept = append(kept, m)
+		kept = append(kept, r)
 		if seq+1 > maxSeq {
 			maxSeq = seq + 1
 		}
@@ -178,43 +259,35 @@ func fetchBatch(ctx context.Context, c *config, st *ScanState) ([]jetstream.Msg,
 	return kept, nil
 }
 
-// msgTime returns a message's stream timestamp.
-func msgTime(m jetstream.Msg) (time.Time, uint64, error) {
-	md, err := m.Metadata()
-	if err != nil {
-		return time.Time{}, 0, err
-	}
-	return md.Timestamp, md.Sequence.Stream, nil
-}
-
 // headerMap flattens message headers (several values become a JSON array).
-func headerMap(m jetstream.Msg) map[string]string {
-	h := m.Headers()
-	if len(h) == 0 {
+func headerMap(r rec) map[string]string {
+	if len(r.Header) == 0 {
 		return map[string]string{}
 	}
-	return joinHeaders(h)
+	return joinHeaders(r.Header)
 }
 
 // payload returns a non-nil payload slice.
-func payload(m jetstream.Msg) []byte {
-	if d := m.Data(); d != nil {
-		return d
+func payload(r rec) []byte {
+	if r.Data != nil {
+		return r.Data
 	}
 	return []byte{}
 }
 
-// stopSeqOf reads the stream's current last sequence.
-func stopSeqOf(ctx context.Context, c *config, stream string) (uint64, error) {
+// stopSeqOf reads the stream's current last sequence, and whether it must be
+// read directly (work-queue and interest retention).
+func stopSeqOf(ctx context.Context, c *config, stream string) (uint64, bool, error) {
 	js, err := c.jetStream()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	s, err := js.Stream(ctx, stream)
 	if err != nil {
-		return 0, streamErr(stream, err)
+		return 0, false, streamErr(stream, err)
 	}
-	return s.CachedInfo().State.LastSeq, nil
+	info := s.CachedInfo()
+	return info.State.LastSeq, info.Config.Retention != jetstream.LimitsPolicy, nil
 }
 
 // ---------------------------------------------------------------- messages
@@ -328,11 +401,11 @@ func (*MessagesFunc) NewState(params *vgi.ProcessParams) (*ScanState, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
-	stop, err := stopSeqOf(ctx, c, a.Stream)
+	stop, direct, err := stopSeqOf(ctx, c, a.Stream)
 	if err != nil {
 		return nil, err
 	}
-	st := &ScanState{Stream: a.Stream, StopSeq: stop, Remaining: -1, SecretName: a.secret()}
+	st := &ScanState{Stream: a.Stream, StopSeq: stop, Remaining: -1, SecretName: a.secret(), Direct: direct}
 	if a.MaxMsgs != nil {
 		st.Remaining = *a.MaxMsgs
 	}
@@ -386,12 +459,8 @@ func (*MessagesFunc) Process(ctx context.Context, params *vgi.ProcessParams, st 
 	env := newRowEnv(messagesColumns)
 	rows := make([][]any, 0, len(msgs))
 	for _, m := range msgs {
-		ts, seq, err := msgTime(m)
-		if err != nil {
-			return err
-		}
 		p := payload(m)
-		row := []any{st.Stream, m.Subject(), int64(seq), ts, m.Subject(), p, textOf(p), int64(len(p)), headerMap(m), nil}
+		row := []any{st.Stream, m.Subject, int64(m.Seq), m.Time, m.Subject, p, textOf(p), int64(len(p)), headerMap(m), nil}
 		if len(preds) > 0 {
 			env.r = row
 			ok, err := matchAll(preds, env)
@@ -496,7 +565,7 @@ func (*KVEntriesFunc) NewState(params *vgi.ProcessParams) (*ScanState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
 	stream := "KV_" + a.Bucket
-	stop, err := stopSeqOf(ctx, c, stream)
+	stop, _, err := stopSeqOf(ctx, c, stream)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, fmt.Errorf("KV bucket %q not found in this account", a.Bucket)
@@ -527,15 +596,9 @@ func (*KVEntriesFunc) Process(ctx context.Context, params *vgi.ProcessParams, st
 	prefix := "$KV." + st.Bucket + "."
 	rows := make([][]any, 0, len(msgs))
 	for _, m := range msgs {
-		ts, seq, err := msgTime(m)
-		if err != nil {
-			return err
-		}
 		op := "PUT"
-		if h := m.Headers(); h != nil {
-			if o := h.Get("KV-Operation"); o != "" {
-				op = o
-			}
+		if vs := natsio.Header(m.Header).Values("KV-Operation"); len(vs) > 0 && vs[0] != "" {
+			op = vs[0]
 		}
 		if op != "PUT" && !st.IncludeDeleted {
 			continue
@@ -545,7 +608,7 @@ func (*KVEntriesFunc) Process(ctx context.Context, params *vgi.ProcessParams, st
 			p := payload(m)
 			val, text = p, textOf(p)
 		}
-		rows = append(rows, []any{st.Bucket, strings.TrimPrefix(m.Subject(), prefix), int64(seq), op, ts, val, text})
+		rows = append(rows, []any{st.Bucket, strings.TrimPrefix(m.Subject, prefix), int64(m.Seq), op, m.Time, val, text})
 	}
 	return emitRows(params, out, kvEntriesColumns, rows)
 }
