@@ -40,7 +40,7 @@ func u64(v uint64) int64 {
 	return int64(v)
 }
 
-const jsDocLLM = " Reads the JetStream API of the account the secret authenticates as (JETSTREAM_DOMAIN selects a domain); read-only."
+const jsDocLLM = " Reads the JetStream API of the secret's own account; JETSTREAM_DOMAIN selects a domain. Read-only."
 
 // jsArgs is the argument struct of argument-less JetStream functions.
 type jsArgs = monArgs
@@ -219,9 +219,9 @@ func newStreams() vgi.TableFunction {
 	return newSimple(&simpleFunc[jsArgs]{
 		name: "streams", columns: streamsColumns,
 		meta: meta("JetStream Streams", "jetstream", "streams, jetstream, stream info, retention, storage, limits, messages, last sequence",
-			"One row per stream in the account ($JS.API.STREAM.LIST): configuration (subjects LIST, retention, storage, "+
+			"One row per stream in the account ($JS.API.STREAM.LIST): configuration (subjects `LIST`, retention, storage, "+
 				"replicas, limits with NULL = unlimited, discard, duplicate window, compression, flags, mirror, sources, "+
-				"metadata MAP, full config JSON) and state (messages, bytes, first/last seq and ts, num_subjects, num_deleted, "+
+				"metadata `MAP`, full config JSON) and state (messages, bytes, first/last seq and ts, num_subjects, num_deleted, "+
 				"consumer_count, cluster leader). kind tells plain streams from KV (KV_*) and object-store (OBJ_*) backing "+
 				"streams. Named arg: secret_name."+jsDocLLM,
 			"## streams()\n\nEvery stream's configuration and state.",
@@ -461,7 +461,7 @@ func newKVBuckets() vgi.TableFunction {
 		meta: meta("Key-Value Buckets", "kv", "kv, key value, buckets, jetstream kv, history, ttl",
 			"One row per JetStream KV bucket: description, backing stream, values (entries incl. history and delete markers), "+
 				"keys, history depth, ttl_seconds, size limits, bytes, storage, replicas, compressed, last_revision, last_update, "+
-				"metadata. Named arg: secret_name. Read entries with kv_entries(bucket)."+jsDocLLM,
+				"metadata. Named arg: secret_name. The kv_entries function reads the entries."+jsDocLLM,
 			"## kv_buckets()\n\nJetStream key-value buckets.",
 			"JetStream key-value buckets with size, history depth and TTL", kvBucketsColumns, kvBucketsExamples),
 		fetch: single(func(ctx context.Context, c *config, _ jsArgs) ([][]any, error) {
@@ -526,8 +526,8 @@ func newObjectStores() vgi.TableFunction {
 		name: "object_stores", columns: objBucketsColumns,
 		meta: meta("Object Stores", "objects", "object store, buckets, files, blobs, jetstream object store",
 			"One row per JetStream object store: description, backing stream, objects (live, from the object list), size_bytes, "+
-				"ttl_seconds, max_bytes, storage, replicas, sealed, compressed, metadata. Named arg: secret_name. List objects "+
-				"with objects(bucket)."+jsDocLLM,
+				"ttl_seconds, max_bytes, storage, replicas, sealed, compressed, metadata. Named arg: secret_name. The objects function "+
+				"lists a store's objects."+jsDocLLM,
 			"## object_stores()\n\nJetStream object stores.",
 			"JetStream object stores with object counts and size", objBucketsColumns, objBucketsExamples),
 		fetch: single(func(ctx context.Context, c *config, _ jsArgs) ([][]any, error) {
@@ -640,10 +640,10 @@ func newObjects() vgi.TableFunction {
 		name: "objects", columns: objectsColumns,
 		meta: meta("Objects", "objects", "objects, files, object store list, object info, blobs, download",
 			"One row per object in an object store (the store's metadata subjects, read with a short-lived ordered consumer): "+
-				"name, description, size, chunks, digest, modified, nuid, deleted, link, headers and metadata MAPs. Args: "+
+				"name, description, size, chunks, digest, modified, nuid, deleted, link, headers and metadata maps (`MAP`). Args: "+
 				"bucket (positional), include_deleted (default false), include_content (default false: content is NULL), "+
-				"max_content_bytes (default 16 MiB; larger objects keep NULL content), secret_name. content is BLOB, "+
-				"content_text the same bytes as VARCHAR when valid UTF-8."+jsDocLLM,
+				"max_content_bytes (default 16 MiB; larger objects keep NULL content), secret_name. content is `BLOB`, "+
+				"content_text the same bytes as `VARCHAR` when valid UTF-8."+jsDocLLM,
 			"## objects(bucket, include_deleted := false, include_content := false, max_content_bytes := 16777216)\n\n"+
 				"Objects in an object store; content only on request.",
 			"Objects in a JetStream object store, with optional content download", objectsColumns, objectsExamples),

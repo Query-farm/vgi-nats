@@ -1,16 +1,62 @@
 # Private graders for the public vgi.agent_test_tasks in the worker's catalog metadata.
-# `vgi-lint lint --ai` runs an agent on each prompt and grades it with check_sql.
+# `vgi-lint lint --ai` runs an agent on each prompt and grades it with reference_sql / check_sql.
 # See https://github.com/Query-farm/vgi-lint-check (VGI920).
+#
+# Every task reads a NATS server: start the fixture (bin/natsfixture, see the
+# README "How it is tested") and create the default secret as user app with
+# MONITORING_URL. CI cannot run them (execute: false).
 tasks:
-  - name: formal_greeting
-    reference_sql: SELECT nats.main.greet('Grace', 'formal') AS greeting
-  - name: sum_of_squares
-    reference_sql: SELECT sum(squared) AS total FROM nats.main.sequence_table(10)
-  - name: stepped_sequence
-    reference_sql: SELECT n FROM nats.main.sequence_table(4, step := 5) ORDER BY n
-  # Reads the public demo API (https://vgi-starter-api.query-farm.services/v1).
-  - name: items_per_category
+  - name: stream_sizes
+    reference_sql: SELECT stream, messages FROM nats.main.streams() WHERE kind = 'stream' ORDER BY messages DESC
+  - name: consumer_lag
+    reference_sql: SELECT consumer, lag FROM nats.main.consumers(stream := 'ORDERS') WHERE lag > 0 ORDER BY lag DESC
+  - name: eu_orders
+    reference_sql: SELECT seq, subject FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY seq
+  - name: tenant_messages
+    reference_sql: SELECT count(*) AS messages FROM nats.main.messages('ORDERS') WHERE headers['X-Tenant'] = 'globex'
+  - name: orders_per_subject
+    reference_sql: SELECT subject, messages FROM nats.main.stream_subjects('ORDERS') ORDER BY subject
+  - name: current_color
+    reference_sql: SELECT value_text FROM nats.main.kv_entries('config', key := 'app.color')
+  - name: color_history
+    reference_sql: >-
+      SELECT value_text FROM nats.main.kv_entries('config', key := 'app.color', include_history := true) ORDER BY revision
+  - name: largest_object
+    reference_sql: SELECT name, size FROM nats.main.objects('files') ORDER BY size DESC LIMIT 1
+  - name: server_version
+    reference_sql: SELECT version, jetstream_enabled FROM nats.main.server_info()
+  # Live counters: only the connection name is stable.
+  - name: busy_connection
     check_sql: >-
-      SELECT count(*) = 3 AND sum(items) = 25
-      FROM (SELECT category, count(*) AS items
-            FROM nats.main.fetch_items('https://vgi-starter-api.query-farm.services/v1') GROUP BY category)
+      SELECT name = 'fixture-publisher' FROM nats.main.connections() WHERE name IS NOT NULL ORDER BY in_msgs DESC LIMIT 1
+  - name: system_account
+    reference_sql: SELECT account FROM nats.main.accounts() WHERE is_system
+  - name: js_usage
+    check_sql: SELECT streams = 5 AND consumers = 2 AND storage_bytes > 0 FROM nats.main.account_info()
+  - name: account_traffic
+    reference_sql: SELECT account FROM nats.main.account_stats() ORDER BY received_msgs DESC LIMIT 1
+  - name: cluster_links
+    reference_sql: >-
+      SELECT (SELECT count(*) FROM nats.main.routes()) AS routes, (SELECT count(*) FROM nats.main.gateways()) AS gateways,
+             (SELECT count(*) FROM nats.main.leafnodes()) AS leafnodes
+  - name: server_health
+    reference_sql: SELECT bool_and(healthy) AS all_healthy FROM nats.main.health()
+  - name: js_server_streams
+    reference_sql: SELECT streams, consumers FROM nats.main.jetstream_servers()
+  - name: all_account_lag
+    reference_sql: SELECT account, stream, consumer, lag FROM nats.main.jsz_consumers() WHERE lag > 0 ORDER BY lag DESC
+  - name: all_account_streams
+    reference_sql: SELECT account, stream FROM nats.main.jsz_streams() ORDER BY bytes DESC LIMIT 1
+  - name: kv_inventory
+    reference_sql: SELECT bucket, history FROM nats.main.kv_buckets() ORDER BY bucket
+  - name: object_inventory
+    reference_sql: SELECT bucket, objects FROM nats.main.object_stores() ORDER BY bucket
+  - name: order_receivers
+    check_sql: >-
+      SELECT bool_and(subject = 'orders.>') AND count(*) >= 1
+      FROM nats.main.subscriptions(account := 'APP', test_subject := 'orders.eu.created')
+  - name: match_cache
+    check_sql: SELECT num_subscriptions > 50 FROM nats.main.subscription_stats()
+  - name: created_subjects
+    reference_sql: >-
+      SELECT subject FROM nats.main.stream_subjects('ORDERS') WHERE nats.main.subject_matches('orders.*.created', subject) ORDER BY subject

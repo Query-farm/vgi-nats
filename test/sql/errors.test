@@ -118,4 +118,4 @@ SELECT * FROM nats.main.connections(state := 'sleeping');
 query I
 SELECT count(DISTINCT function_name) FROM duckdb_functions() WHERE database_name = 'nats';
 ----
-22
+23

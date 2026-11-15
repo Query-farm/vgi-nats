@@ -21,10 +21,10 @@ import (
 
 // allExamples lists every function's examples for the schema-level tag.
 func allExamples() []exampleQuery {
-	return exampleQueries(serverInfoExamples, connectionsExamples, routesExamples, gatewaysExamples, leafExamples,
+	return exampleQueries(firstExamples(serverInfoExamples, connectionsExamples, routesExamples, gatewaysExamples, leafExamples,
 		subsExamples, subStatsExamples, accountsExamples, accStatsExamples, jsServersExamples, jszStreamsExamples,
 		jszConsumersExamples, healthExamples, accountInfoExamples, streamsExamples, subjectsExamples, consumersExamples,
-		messagesExamples, kvBucketsExamples, kvEntriesExamples, objBucketsExamples, objectsExamples)
+		messagesExamples, kvBucketsExamples, kvEntriesExamples, objBucketsExamples, objectsExamples, subjectMatchesExamples))
 }
 
 // NewWorker builds the worker: one catalog, one main schema. Extra options
@@ -51,5 +51,6 @@ func NewWorker(opts ...vgi.WorkerOption) *vgi.Worker {
 	}
 	w.RegisterTable(vgi.AsTableFunction[ScanState](&MessagesFunc{}))
 	w.RegisterTable(vgi.AsTableFunction[ScanState](&KVEntriesFunc{}))
+	w.RegisterScalar(vgi.AsScalarFunction[subjectMatchesArgs](&SubjectMatches{}))
 	return w
 }

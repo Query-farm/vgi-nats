@@ -104,7 +104,7 @@ func httpGet(ctx context.Context, base, path string, q url.Values) (json.RawMess
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<30))
 		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 && path != "healthz" {
+		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && path != "healthz") {
 			lastErr = fmt.Errorf("nats monitoring %s/%s: HTTP %d: %s", base, path, resp.StatusCode, snippet(body))
 			wait := time.Duration(250<<attempt) * time.Millisecond
 			if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s >= 0 {
@@ -117,7 +117,7 @@ func httpGet(ctx context.Context, base, path string, q url.Values) (json.RawMess
 			return nil, fmt.Errorf("nats monitoring %s/%s: reading response: %w", base, path, readErr)
 		}
 		// /healthz answers 503 with a JSON status when unhealthy: that is data.
-		if resp.StatusCode/100 != 2 && !(path == "healthz" && json.Valid(body)) {
+		if resp.StatusCode/100 != 2 && (path != "healthz" || !json.Valid(body)) {
 			msg := fmt.Sprintf("nats monitoring %s/%s: HTTP %d: %s", base, path, resp.StatusCode, snippet(body))
 			if resp.StatusCode == http.StatusNotFound {
 				msg += " (this server does not serve the endpoint; is MONITORING_URL the HTTP monitoring port, usually 8222?)"

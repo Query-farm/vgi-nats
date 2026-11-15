@@ -28,9 +28,10 @@ import (
 	"github.com/nats-io/nuid"
 )
 
+// BatchMsgs caps the messages fetched per batch (a variable so tests can page small).
+var BatchMsgs = 2000
+
 const (
-	// BatchMsgs caps the messages fetched per batch.
-	BatchMsgs = 2000
 	// BatchBytes caps the payload bytes fetched per batch.
 	BatchBytes = 32 << 20
 	// ephemeralIdle is the inactivity threshold of the scan's consumers.
@@ -261,13 +262,14 @@ func (*MessagesFunc) Name() string { return "messages" }
 func (*MessagesFunc) Metadata() vgi.FunctionMetadata {
 	m := meta("Stream Messages", "jetstream", "messages, read stream, browse, peek, replay, payload, headers, subject, sequence",
 		"Read a JetStream stream's stored messages without consuming them: one row per message with stream, seq, subject, "+
-			"timestamp TIMESTAMPTZ, payload BLOB, payload_text (VARCHAR when valid UTF-8, else NULL), headers MAP and "+
+			"timestamp `TIMESTAMPTZ`, payload `BLOB`, payload_text (`VARCHAR` when valid UTF-8, else NULL), headers `MAP` and "+
 			"size_bytes. Args: stream (positional), subject (wildcards allowed), start_seq, start_time, max_msgs, secret_name. "+
-			"Pushed down: subject = / IN (...) and the subject argument become the consumer's filter subjects; seq >, >=, = "+
-			"and BETWEEN set the start sequence and stop sequence; timestamp >= / > sets the start time. Reads use a short-"+
+			"Pushed down: equality and IN-list filters on subject, plus the subject argument, become the consumer's filter "+
+			"subjects; comparisons and ranges on seq choose the start and stop sequence; a lower bound on timestamp "+
+			"chooses the start time. Every pushed filter is re-checked exactly on each row. Reads use a short-"+
 			"lived ephemeral AckNone consumer per batch (deleted afterwards), so durable consumers, acknowledgements and "+
 			"work-queue/interest retention are unaffected. The scan stops at the stream's last sequence when it started. "+
-			"Decode JSON payloads with json_extract(payload_text, ...)."+jsDocLLM,
+			"Decode JSON payloads with the json_extract function over payload_text."+jsDocLLM,
 		"## messages(stream, subject := NULL, start_seq := NULL, start_time := NULL, max_msgs := NULL)\n\n"+
 			"Browse a stream's messages without acknowledging or removing anything. `WHERE subject = ...`, `seq` ranges and "+
 			"`timestamp >= ...` are pushed down into the read.",
@@ -454,9 +456,9 @@ func (*KVEntriesFunc) Name() string { return "kv_entries" }
 // Metadata describes kv_entries().
 func (*KVEntriesFunc) Metadata() vgi.FunctionMetadata {
 	return meta("Key-Value Entries", "kv", "kv, key value, get, history, revisions, watch, config, entries",
-		"Read a KV bucket: by default the latest revision of every live key; include_history := true returns every stored "+
-			"revision (up to the bucket's history depth); include_deleted := true adds DEL/PURGE markers. Columns: bucket, "+
-			"key, revision (stream sequence), operation ('PUT', 'DEL', 'PURGE'), created TIMESTAMPTZ, value BLOB, value_text. "+
+		"Read a KV bucket: by default the latest revision of every live key; with include_history true, every stored "+
+			"revision (up to the bucket's history depth); include_deleted true adds DEL/PURGE markers. Columns: bucket, "+
+			"key, revision (stream sequence), operation ('PUT', 'DEL', 'PURGE'), created `TIMESTAMPTZ`, value `BLOB`, value_text. "+
 			"Args: bucket (positional), key (named; exact key or NATS wildcard pattern, pushed down), include_history, "+
 			"include_deleted, secret_name. Reads with an ephemeral AckNone consumer; nothing is modified."+jsDocLLM,
 		"## kv_entries(bucket, key := '>', include_history := false, include_deleted := false)\n\nKV values and their history.",

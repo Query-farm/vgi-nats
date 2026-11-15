@@ -1033,7 +1033,7 @@ func newHealth() vgi.TableFunction {
 	return newSimple(&simpleFunc[healthArgs]{
 		name: "health", columns: healthColumns,
 		meta: meta("Health Check", "monitoring", "healthz, health, readiness, liveness, jetstream health",
-			"One row per server from /healthz: status ('ok' when healthy), healthy BOOLEAN, status_code and error. By default "+
+			"One row per server from /healthz: status ('ok' when healthy), healthy `BOOLEAN`, status_code and error. By default "+
 				"the check includes JetStream streams and consumers; js_enabled_only or js_server_only narrow it (pushed down). "+
 				"Named arg: secret_name."+monitoringDocLLM,
 			"## health(js_enabled_only := false, js_server_only := false)\n\nServer and JetStream health (`/healthz`).",

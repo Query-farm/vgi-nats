@@ -234,3 +234,28 @@ query II
 SELECT count(*), max(seq) FROM nats.main.messages('BULK', max_msgs := 4500);
 ----
 4500	4500
+
+# ---------------------------------------------------------------- subject_matches (offline scalar)
+
+query T
+SELECT nats.main.subject_matches('orders.*.created', 'orders.eu.created');
+----
+true
+
+query TTTT
+SELECT nats.main.subject_matches('orders.>', 'orders'), nats.main.subject_matches('orders.*', 'orders.eu.x'),
+       nats.main.subject_matches(NULL, 'a'), nats.main.subject_matches('>', 'a.b.c');
+----
+false	false	NULL	true
+
+query T
+SELECT subject FROM nats.main.stream_subjects('ORDERS') WHERE nats.main.subject_matches('orders.*.created', subject) ORDER BY subject;
+----
+orders.apac.created
+orders.eu.created
+orders.us.created
+
+query I
+SELECT count(*) FROM range(5000) t(i) WHERE nats.main.subject_matches('bulk.*', 'bulk.' || i);
+----
+5000
