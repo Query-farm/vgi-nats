@@ -172,12 +172,20 @@ const schemaDocLLM = "The main schema holds every function; the table functions 
 	"and OBJ_<bucket> back KV buckets and object stores (the kind column of streams). subject_matches applies NATS " +
 	"wildcard rules locally."
 
-// SchemaDocMD is the main schema's human-facing description (also its comment).
+// SchemaComment is the main schema's one-line comment.
+const SchemaComment = "Read-only SQL over one NATS deployment: server monitoring, JetStream streams and messages, KV and object stores."
+
+// SchemaDocMD is the main schema's human-facing description.
 const SchemaDocMD = "## main\n\n" +
-	"Every function lives here. Monitoring functions read the HTTP monitoring endpoints or the `$SYS` API; JetStream, " +
-	"KV and object-store functions read the account named by the `nats` secret.\n\n" +
-	"Reach for `messages` to look inside a stream, `consumers` for lag, and `server_info` / `connections` for the health " +
-	"and load of the servers."
+	"A read-only window onto one NATS deployment. Monitoring data comes from the HTTP monitoring endpoints when the " +
+	"`nats` secret sets `MONITORING_URL`, and otherwise from the `$SYS` request API (system-account credentials, one " +
+	"answer per server). JetStream, KV and object-store data comes from the account the secret authenticates as; pass " +
+	"`secret_name` to pick between several secrets.\n\n" +
+	"Conventions: times are `TIMESTAMPTZ`, durations are `*_seconds` doubles, unlimited limits are NULL, and open-ended " +
+	"server documents are JSON text. Message reads use short-lived ephemeral consumers without acknowledgements, so " +
+	"querying never consumes, acknowledges or deletes anything, and subject, sequence and time filters in `WHERE` are " +
+	"pushed into the read instead of scanning the whole stream.\n\n" +
+	"Streams named `KV_<bucket>` and `OBJ_<bucket>` are the storage behind KV buckets and object stores."
 
 // agentTask is one public analyst task for `vgi-lint simulate`.
 type agentTask struct {
