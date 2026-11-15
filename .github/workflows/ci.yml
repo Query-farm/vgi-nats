@@ -66,6 +66,7 @@ jobs:
           exe=""; [ "$RUNNER_OS" = "Windows" ] && exe=.exe
           go build -o "bin/vgi-nats-worker$exe" ./cmd/vgi-nats-worker
           go build -o "bin/recipes$exe" ./examples
+          go build -o "bin/natsfixture$exe" ./test/fixture/natsfixture
       - name: Install the SQL test runner
         run: |
           uv venv .tools
@@ -77,6 +78,8 @@ jobs:
           export WORKER="$PWD/bin/vgi-nats-worker$exe"
           export HAYBARN_UNITTEST="$tools/haybarn-unittest$exe"
           export RECIPES_WORKER="$PWD/bin/recipes$exe"
+          # The NATS fixture is an embedded nats-server (no Docker), started by the harness.
+          export FIXTURE="$PWD/bin/natsfixture$exe"
           TRANSPORT=${{ matrix.transport }} PYTHON="uv run --no-project python" ci/run-integration.sh
 
   metadata:
@@ -96,8 +99,13 @@ jobs:
           location: ${{ github.workspace }}/bin/vgi-nats-worker
           # Set in vgi-lint.toml, so local runs and CI agree.
           fail-on: ${{ steps.lintcfg.outputs.fail_on }}
-          # Set to false if your examples need real credentials or network access.
-          execute: true
+          # Credential-gated: every table function (nats.main.server_info, connections,
+          # streams, consumers, messages, kv_entries, objects, ...) needs a `nats` secret
+          # (SERVERS plus a token, user/password, NKey seed or .creds) for a live NATS
+          # server, and the monitoring functions also need MONITORING_URL or
+          # system-account credentials, so examples are not executed here. The SQL
+          # tests run every function against the embedded fixture instead.
+          execute: "false"
 
   docker:
     name: Docker image smoke test

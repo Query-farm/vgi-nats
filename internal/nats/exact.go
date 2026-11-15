@@ -3,7 +3,7 @@
 //
 // DuckDB removes every predicate it pushes into messages() from its own plan
 // and never re-checks the rows it gets back (verified: a pushed
-// payload_text LIKE was otherwise ignored). pushdown.go uses the subject, seq
+// payload_text LIKE was otherwise ignored). pushdown.go uses the subject, sequence
 // and timestamp predicates to narrow the read; this file evaluates EVERY
 // pushed predicate on every row, so the read only has to be a superset.
 //
@@ -345,7 +345,7 @@ func (e *rowEnv) column(name string) (value, error) {
 	case map[string]string:
 		return value{kind: 'm', m: v}, nil
 	}
-	return nullValue, fmt.Errorf("filters on column %q cannot be evaluated by the worker; filter on payload_text, size_bytes or "+
+	return nullValue, fmt.Errorf("filters on column %q cannot be evaluated by the worker; filter on payload_text, payload_bytes or "+
 		"another column, or move the condition outside the call (e.g. a subquery)", name)
 }
 

@@ -25,7 +25,7 @@ jobs:
       - name: Upgrade dependencies, keeping vgi-go on its pinned minor
         run: |
           go get -u ./...
-          go get github.com/Query-farm/vgi-go@v0.39
+          go get github.com/Query-farm/vgi-go@v0.42
           go mod tidy
       - run: make lint test-unit
       - run: make test-sql-all

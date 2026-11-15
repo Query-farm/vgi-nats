@@ -145,7 +145,7 @@ const catalogDocLLM = "Query NATS from SQL, read-only: the servers' monitoring d
 	"MONITORING_URL such as 'http://host:8222' (one per server), optional JETSTREAM_DOMAIN). With several secrets, pass " +
 	"the secret_name named argument. Monitoring functions read the HTTP monitoring endpoints when MONITORING_URL is set " +
 	"and otherwise the $SYS request API, which needs system-account credentials and answers once per server. To look " +
-	"inside a stream use messages (payload as `BLOB` plus payload_text, headers as a `MAP`, subject/seq/timestamp " +
+	"inside a stream use messages (payload as `BLOB` plus payload_text, headers as a `MAP`, subject/sequence/timestamp " +
 	"filters pushed into the read); for consumer lag use consumers; for KV values use kv_entries; for server load use " +
 	"server_info and connections. Reads use short-lived ephemeral consumers without acknowledgements, so nothing is " +
 	"consumed, acknowledged, purged or deleted, and nothing is ever published."
@@ -166,7 +166,7 @@ const catalogDocMDLong = "# NATS in DuckDB\n\n" +
 const schemaDocLLM = "The main schema holds every function; the table functions take an optional secret_name named " +
 	"argument. Monitoring rows start with server_id and server_name. Times are `TIMESTAMPTZ`, durations are *_seconds " +
 	"`DOUBLE` columns, limits are NULL when unlimited, and open-ended documents (varz, config, detail) are JSON text. " +
-	"messages reads stored messages oldest first: filter with WHERE on subject, seq and timestamp (pushed down) and " +
+	"messages reads stored messages oldest first: filter with WHERE on subject, sequence and timestamp (pushed down) and " +
 	"decode JSON payloads with the json_extract function over payload_text. kv_entries reads KV values (include_history " +
 	"for every revision); objects lists object-store objects (include_content to download). Streams named KV_<bucket> " +
 	"and OBJ_<bucket> back KV buckets and object stores (the kind column of streams). subject_matches applies NATS " +

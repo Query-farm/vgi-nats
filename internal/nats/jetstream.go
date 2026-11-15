@@ -607,7 +607,7 @@ var objectsColumns = []arrow.Field{
 	column("nuid", str, "Unique id of this object version.", false),
 	column("deleted", boolT, "Whether this is a delete marker.", false),
 	column("link", str, "For a link: '<bucket>/<name>' it points to; NULL otherwise.", true),
-	column("headers", strMap, "Object headers (multiple values joined with ', ').", false),
+	column("headers", strMap, "Object headers; a header with several values is a JSON array of strings.", false),
 	column("metadata", strMap, "Object metadata.", false),
 	column("content", bin, "The object bytes when include_content := true and size <= max_content_bytes; otherwise NULL.", true),
 	column("content_text", str, "content as text when it is valid UTF-8; otherwise NULL.", true),
@@ -620,10 +620,20 @@ var objectsExamples = []vgi.CatalogExample{
 		Description: "Read small text objects"},
 }
 
+// joinHeaders flattens headers to text: one value as is, several as a JSON
+// array of strings (the shared messaging vocabulary's "nested values as JSON").
 func joinHeaders(h map[string][]string) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		out[k] = strings.Join(vs, ", ")
+		switch len(vs) {
+		case 0:
+			out[k] = ""
+		case 1:
+			out[k] = vs[0]
+		default:
+			b, _ := json.Marshal(vs)
+			out[k] = string(b)
+		}
 	}
 	return out
 }

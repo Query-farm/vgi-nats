@@ -187,7 +187,7 @@ func msgTime(m jetstream.Msg) (time.Time, uint64, error) {
 	return md.Timestamp, md.Sequence.Stream, nil
 }
 
-// headerMap flattens message headers (multiple values joined with ", ").
+// headerMap flattens message headers (several values become a JSON array).
 func headerMap(m jetstream.Msg) map[string]string {
 	h := m.Headers()
 	if len(h) == 0 {
@@ -232,20 +232,22 @@ func (a messagesArgs) secret() string { return deref(a.SecretName) }
 
 var messagesColumns = []arrow.Field{
 	column("stream", str, "Stream the message is stored in.", false),
-	column("seq", i64, "Stream sequence number (unique and increasing within the stream).", false),
 	column("subject", str, "Subject the message was published on.", false),
+	column("sequence", i64, "Stream sequence number (unique and increasing within the stream).", false),
 	column("timestamp", tsT, "When the stream stored the message.", false),
+	column("key", str, "The message key in the shared messaging vocabulary: for NATS, the subject.", false),
 	column("payload", bin, "Message payload bytes.", false),
 	column("payload_text", str, "The payload as text when it is valid UTF-8; otherwise NULL.", true),
-	column("headers", strMap, "Message headers (multiple values for one header joined with ', ').", false),
-	column("size_bytes", i64, "Payload size in bytes.", false),
+	column("payload_bytes", i64, "Payload size in bytes.", false),
+	column("headers", strMap, "Message headers; a header with several values is a JSON array of strings.", false),
+	column("redelivered", boolT, "Always NULL: a stream read has no delivery history (kept for the shared messaging vocabulary).", true),
 }
 
 var messagesExamples = []vgi.CatalogExample{
-	{SQL: "SELECT seq, subject, timestamp, payload_text FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY seq",
+	{SQL: "SELECT sequence, subject, timestamp, payload_text FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY sequence",
 		Description: "European order events, oldest first"},
-	{SQL: "SELECT subject, count(*) AS msgs, sum(size_bytes) AS bytes FROM nats.main.messages('ORDERS') WHERE seq > 5 GROUP BY subject ORDER BY subject",
-		Description: "Message count and bytes per subject after sequence 5 (the seq filter is pushed down)"},
+	{SQL: "SELECT subject, count(*) AS msgs, sum(payload_bytes) AS bytes FROM nats.main.messages('ORDERS') WHERE sequence > 5 GROUP BY subject ORDER BY subject",
+		Description: "Message count and bytes per subject after sequence 5 (the sequence filter is pushed down)"},
 	{SQL: "SELECT json_extract_string(payload_text, '$.region') AS region, count(*) AS orders FROM nats.main.messages('ORDERS', subject := 'orders.*.created', max_msgs := 1000) GROUP BY region ORDER BY region",
 		Description: "Decode JSON payloads and count created orders per region"},
 }
@@ -261,17 +263,18 @@ func (*MessagesFunc) Name() string { return "messages" }
 // Metadata describes messages().
 func (*MessagesFunc) Metadata() vgi.FunctionMetadata {
 	m := meta("Stream Messages", "jetstream", "messages, read stream, browse, peek, replay, payload, headers, subject, sequence",
-		"Read a JetStream stream's stored messages without consuming them: one row per message with stream, seq, subject, "+
-			"timestamp `TIMESTAMPTZ`, payload `BLOB`, payload_text (`VARCHAR` when valid UTF-8, else NULL), headers `MAP` and "+
-			"size_bytes. Args: stream (positional), subject (wildcards allowed), start_seq, start_time, max_msgs, secret_name. "+
-			"Pushed down: equality and IN-list filters on subject, plus the subject argument, become the consumer's filter "+
-			"subjects; comparisons and ranges on seq choose the start and stop sequence; a lower bound on timestamp "+
+		"Read a JetStream stream's stored messages without consuming them: one row per message with stream, subject, "+
+			"sequence, timestamp `TIMESTAMPTZ`, key (the subject), payload `BLOB`, payload_text (`VARCHAR` when valid UTF-8, "+
+			"else NULL), payload_bytes, headers `MAP` (several values become a JSON array) and redelivered (always NULL), "+
+			"the shared Query.Farm messaging vocabulary. Args: stream (positional), subject (wildcards allowed), start_seq, start_time, max_msgs, secret_name. "+
+			"Pushed down: equality and IN-list filters on subject (or key), plus the subject argument, become the consumer's filter "+
+			"subjects; comparisons and ranges on sequence choose the start and stop sequence; a lower bound on timestamp "+
 			"chooses the start time. Every pushed filter is re-checked exactly on each row. Reads use a short-"+
 			"lived ephemeral AckNone consumer per batch (deleted afterwards), so durable consumers, acknowledgements and "+
 			"work-queue/interest retention are unaffected. The scan stops at the stream's last sequence when it started. "+
 			"Decode JSON payloads with the json_extract function over payload_text."+jsDocLLM,
 		"## messages(stream, subject := NULL, start_seq := NULL, start_time := NULL, max_msgs := NULL)\n\n"+
-			"Browse a stream's messages without acknowledging or removing anything. `WHERE subject = ...`, `seq` ranges and "+
+			"Browse a stream's messages without acknowledging or removing anything. `WHERE subject = ...`, `sequence` ranges and "+
 			"`timestamp >= ...` are pushed down into the read.",
 		"Read a stream's messages without consuming them; subject, sequence and time filters pushed down",
 		messagesColumns, messagesExamples)()
@@ -388,7 +391,7 @@ func (*MessagesFunc) Process(ctx context.Context, params *vgi.ProcessParams, st 
 			return err
 		}
 		p := payload(m)
-		row := []any{st.Stream, int64(seq), m.Subject(), ts, p, textOf(p), headerMap(m), int64(len(p))}
+		row := []any{st.Stream, m.Subject(), int64(seq), ts, m.Subject(), p, textOf(p), int64(len(p)), headerMap(m), nil}
 		if len(preds) > 0 {
 			env.r = row
 			ok, err := matchAll(preds, env)

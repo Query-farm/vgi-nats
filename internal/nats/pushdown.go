@@ -1,5 +1,5 @@
 // Pushdown planning for messages(): turn the SQL predicates DuckDB pushes on
-// subject, seq and timestamp into the read's filter subjects, start position
+// subject, sequence and timestamp into the read's filter subjects, start position
 // and stop sequence. The plan only narrows the read to a superset of the
 // matching rows; see exact.go for how the remaining rows are filtered.
 
@@ -28,7 +28,11 @@ func planPushdown(pf *vgi.PushdownFilters) pushPlan {
 	if pf == nil {
 		return p
 	}
-	if vals := pf.GetColumnValues("subject"); vals != nil {
+	vals := pf.GetColumnValues("subject")
+	if vals == nil {
+		vals = pf.GetColumnValues("key") // key is the subject under another name
+	}
+	if vals != nil {
 		if sa, ok := vals.(*array.String); ok {
 			p.Subjects = []string{}
 			for i := 0; i < sa.Len(); i++ {
@@ -45,7 +49,7 @@ func planPushdown(pf *vgi.PushdownFilters) pushPlan {
 			}
 		}
 	}
-	if b := pf.GetColumnBounds("seq"); b != nil {
+	if b := pf.GetColumnBounds("sequence"); b != nil {
 		if v, ok := scalarInt(b.MinValue); ok {
 			if !b.MinInclusive {
 				v++

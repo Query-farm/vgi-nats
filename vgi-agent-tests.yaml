@@ -11,7 +11,7 @@ tasks:
   - name: consumer_lag
     reference_sql: SELECT consumer, lag FROM nats.main.consumers(stream := 'ORDERS') WHERE lag > 0 ORDER BY lag DESC
   - name: eu_orders
-    reference_sql: SELECT seq, subject FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY seq
+    reference_sql: SELECT sequence, subject FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY sequence
   - name: tenant_messages
     reference_sql: SELECT count(*) AS messages FROM nats.main.messages('ORDERS') WHERE headers['X-Tenant'] = 'globex'
   - name: orders_per_subject
