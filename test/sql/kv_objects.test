@@ -1,0 +1,135 @@
+# name: test/sql/kv_objects.test
+# description: KV buckets and entries, object stores and objects
+# group: [nats]
+
+require vgi
+
+require-env NATS_WORKER
+
+require-env NATS_URL
+
+require-env NATS_MON_URL
+
+require-env NATS_TOKEN_URL
+
+require-env NATS_TOKEN_MON_URL
+
+require-env NATS_BOUNDARY
+
+statement ok
+ATTACH 'nats' (TYPE vgi, LOCATION '{NATS_WORKER}');
+
+# The default secret: account APP over user/password, with HTTP monitoring.
+statement ok
+CREATE SECRET (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', MONITORING_URL '{NATS_MON_URL}');
+
+# Scoped, so they never compete with the default; selected with secret_name.
+statement ok
+CREATE SECRET natssys (TYPE nats, SERVERS '{NATS_URL}', USER 'sys', PASSWORD 'sys-pass', SCOPE 'nats://sys');
+
+statement ok
+CREATE SECRET natsnk (TYPE nats, SERVERS '{NATS_URL}', NKEY_SEED 'SUAA5KW3YKG764K5R5FABZUV73YJ7CGKJEDOEYI55P3TUCKHWVETOI3KHQ', SCOPE 'nats://nkey');
+
+statement ok
+CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-token', MONITORING_URL '{NATS_TOKEN_MON_URL}', SCOPE 'nats://token');
+
+
+# ---------------------------------------------------------------- kv_buckets
+
+query TTTIIITTI
+SELECT bucket, description, stream, values, keys, history, ttl_seconds IS NULL, storage, last_revision FROM nats.main.kv_buckets();
+----
+config	App settings	KV_config	6	3	5	true	file	6
+
+# ---------------------------------------------------------------- kv_entries
+
+query TIT
+SELECT key, revision, value_text FROM nats.main.kv_entries('config') ORDER BY key;
+----
+app.color	4	green
+app.size	3	10
+
+query TITT
+SELECT key, revision, operation, value_text FROM nats.main.kv_entries('config', include_deleted := true) ORDER BY key;
+----
+app.color	4	PUT	green
+app.size	3	PUT	10
+feature.x	6	DEL	NULL
+
+query ITT
+SELECT revision, operation, value_text FROM nats.main.kv_entries('config', key := 'app.color', include_history := true) ORDER BY revision;
+----
+1	PUT	red
+2	PUT	blue
+4	PUT	green
+
+query TITT
+SELECT key, revision, operation, value_text FROM nats.main.kv_entries('config', include_history := true, include_deleted := true) ORDER BY revision;
+----
+app.color	1	PUT	red
+app.color	2	PUT	blue
+app.size	3	PUT	10
+app.color	4	PUT	green
+feature.x	5	PUT	on
+feature.x	6	DEL	NULL
+
+query TT
+SELECT key, value_text FROM nats.main.kv_entries('config', key := 'app.*') ORDER BY key;
+----
+app.color	green
+app.size	10
+
+query I
+SELECT count(*) FROM nats.main.kv_entries('config', key := 'nothing.here');
+----
+0
+
+query T
+SELECT hex(value) FROM nats.main.kv_entries('config', key := 'app.size');
+----
+3130
+
+# ---------------------------------------------------------------- object_stores and objects
+
+query TTTITT
+SELECT bucket, description, stream, objects, size_bytes > 300000, sealed FROM nats.main.object_stores();
+----
+files	Fixture files	OBJ_files	2	true	false
+
+query TIITTT
+SELECT name, size, chunks, deleted, headers['Content-Type'], metadata['owner'] FROM nats.main.objects('files') ORDER BY name;
+----
+data.bin	300000	3	false	NULL	NULL
+hello.txt	11	1	false	text/plain	fixture
+
+query TT
+SELECT name, deleted FROM nats.main.objects('files', include_deleted := true) ORDER BY name;
+----
+data.bin	false
+hello.txt	false
+old.txt	true
+
+# No content unless asked for.
+query TT
+SELECT name, content IS NULL FROM nats.main.objects('files') ORDER BY name;
+----
+data.bin	true
+hello.txt	true
+
+query TIT
+SELECT name, octet_length(content), content_text FROM nats.main.objects('files', include_content := true) ORDER BY name;
+----
+data.bin	300000	NULL
+hello.txt	11	hello world
+
+# Objects above max_content_bytes keep NULL content.
+query TT
+SELECT name, content IS NULL FROM nats.main.objects('files', include_content := true, max_content_bytes := 1000) ORDER BY name;
+----
+data.bin	true
+hello.txt	false
+
+query T
+SELECT digest LIKE 'SHA-256=%' AND nuid IS NOT NULL FROM nats.main.objects('files') WHERE name = 'hello.txt';
+----
+true

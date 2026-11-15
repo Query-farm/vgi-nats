@@ -242,6 +242,9 @@ func newJszStreams() vgi.TableFunction {
 					return nil, err
 				}
 				for _, acc := range z.AccountDetails {
+					if a.Account != nil && acc.Name != *a.Account {
+						continue // servers answer with every account when the named one has no JetStream
+					}
 					for _, s := range acc.Streams {
 						var cl, leader string
 						if s.Cluster != nil {
@@ -307,6 +310,9 @@ func newJszConsumers() vgi.TableFunction {
 					return nil, err
 				}
 				for _, acc := range z.AccountDetails {
+					if a.Account != nil && acc.Name != *a.Account {
+						continue // servers answer with every account when the named one has no JetStream
+					}
 					for _, s := range acc.Streams {
 						for _, cs := range s.Consumers {
 							leader := ""

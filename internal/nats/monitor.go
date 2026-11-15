@@ -234,7 +234,7 @@ type connectionsArgs struct {
 	User       *string `vgi:"name=user,doc=Only connections authenticated as this user."`
 	Cid        *int64  `vgi:"name=cid,ge=1,doc=Only the connection with this connection id."`
 	Subject    *string `vgi:"name=subject,doc=Only connections with a subscription that receives this subject (wildcard subscriptions are matched)."`
-	Offset     int64   `vgi:"name=offset,default=0,ge=0,doc=Skip this many connections per server (server-side paging)."`
+	Skip       int64   `vgi:"name=skip,default=0,ge=0,doc=Skip this many connections per server (the server-side offset for paging)."`
 	MaxRows    *int64  `vgi:"name=max_rows,ge=1,doc=At most this many connections per server (server-side limit)."`
 	SecretName *string `vgi:"name=secret_name,doc=Name of the nats secret to use when several exist."`
 }
@@ -294,20 +294,23 @@ func newConnections() vgi.TableFunction {
 		meta: meta("Client Connections", "monitoring", "connz, connections, clients, slow consumers, pending bytes, rtt, closed connections",
 			"One row per client connection per server from /connz. Pushed down to the server: state ('open', 'closed', 'any'), "+
 				"sort (cid, start, subs, pending, msgs_to, msgs_from, bytes_to, bytes_from, last, idle, uptime, stop, reason, rtt), "+
-				"account, user, cid, offset and max_rows (per server). subject keeps connections with a subscription that receives "+
+				"account, user, cid, skip (offset) and max_rows (per server). subject keeps connections with a subscription that receives "+
 				"that subject. Columns include name, account, authorized_user, ip, start_time, last_activity, rtt_seconds, "+
 				"pending_bytes, in/out msgs and bytes, subscriptions_list. Pages of 1024 are fetched until done."+monitoringDocLLM,
-			"## connections(state := 'open', sort, account, user, cid, subject, offset := 0, max_rows)\n\n"+
+			"## connections(state := 'open', sort, account, user, cid, subject, skip := 0, max_rows)\n\n"+
 				"Client connections (`/connz`) with filters, sorting and paging done by the server.",
 			"Client connections with server-side state, account, user, sort and paging filters (/connz)", connectionsColumns, connectionsExamples),
 		fetch: func(ctx context.Context, c *config, a connectionsArgs, cursor string) (page, error) {
-			offset := a.Offset
+			offset := a.Skip
 			if cursor != "" {
 				offset, _ = strconv.ParseInt(cursor, 10, 64)
 			}
 			size := int64(ConnzPage)
 			if a.MaxRows != nil {
-				size = min(size, *a.MaxRows-(offset-a.Offset))
+				size = min(size, *a.MaxRows-(offset-a.Skip))
+				if size <= 0 {
+					return page{}, nil
+				}
 			}
 			httpState, sysState := connState(a.State)
 			q := url.Values{"subs": {"1"}, "auth": {"1"}, "state": {httpState},

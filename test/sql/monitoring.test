@@ -1,0 +1,255 @@
+# name: test/sql/monitoring.test
+# description: Server monitoring through HTTP endpoints and the $SYS API, against the embedded NATS fixture
+# group: [nats]
+
+require vgi
+
+require-env NATS_WORKER
+
+require-env NATS_URL
+
+require-env NATS_MON_URL
+
+require-env NATS_TOKEN_URL
+
+require-env NATS_TOKEN_MON_URL
+
+require-env NATS_BOUNDARY
+
+statement ok
+LOAD json;
+
+statement ok
+ATTACH 'nats' (TYPE vgi, LOCATION '{NATS_WORKER}');
+
+# The default secret: account APP over user/password, with HTTP monitoring.
+statement ok
+CREATE SECRET (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', MONITORING_URL '{NATS_MON_URL}');
+
+# Scoped, so they never compete with the default; selected with secret_name.
+statement ok
+CREATE SECRET natssys (TYPE nats, SERVERS '{NATS_URL}', USER 'sys', PASSWORD 'sys-pass', SCOPE 'nats://sys');
+
+statement ok
+CREATE SECRET natsnk (TYPE nats, SERVERS '{NATS_URL}', NKEY_SEED 'SUAA5KW3YKG764K5R5FABZUV73YJ7CGKJEDOEYI55P3TUCKHWVETOI3KHQ', SCOPE 'nats://nkey');
+
+statement ok
+CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-token', MONITORING_URL '{NATS_TOKEN_MON_URL}', SCOPE 'nats://token');
+
+
+# ---------------------------------------------------------------- server_info (HTTP /varz)
+
+query TTTTTT
+SELECT server_name, cluster, jetstream_enabled, auth_required, version LIKE '2.%', uptime_seconds >= 0
+FROM nats.main.server_info();
+----
+vgi-nats-fixture	NULL	true	true	true	true
+
+query TIT
+SELECT system_account, len(tags), json_extract_string(varz, '$.server_name') = server_name
+FROM nats.main.server_info();
+----
+SYS	0	true
+
+# The same through the $SYS request API (system-account user, no MONITORING_URL).
+query TT
+SELECT server_name, connections >= 1 FROM nats.main.server_info(secret_name := 'natssys');
+----
+vgi-nats-fixture	true
+
+# A second server, through its own monitoring port.
+query TT
+SELECT server_name, jetstream_enabled FROM nats.main.server_info(secret_name := 'natstok');
+----
+vgi-nats-token	false
+
+# ---------------------------------------------------------------- connections (/connz)
+
+query TTTI
+SELECT name, account, authorized_user, len(subscriptions_list) >= 1
+FROM nats.main.connections() WHERE name = 'fixture-publisher';
+----
+fixture-publisher	APP	app	1
+
+# subject keeps connections whose subscriptions receive it (orders.> covers it).
+query T
+SELECT name FROM nats.main.connections(subject := 'orders.eu.created') ORDER BY name;
+----
+fixture-publisher
+
+query I
+SELECT count(*) FROM nats.main.connections(subject := 'nothing.subscribes.here');
+----
+0
+
+# Server-side account, user and paging filters.
+query I
+SELECT count(*) FROM nats.main.connections(account := 'NOPE');
+----
+0
+
+query T
+SELECT DISTINCT authorized_user FROM nats.main.connections(user := 'app');
+----
+app
+
+query I
+SELECT count(*) FROM nats.main.connections(sort := 'bytes_to', max_rows := 1);
+----
+1
+
+query T
+SELECT count(*) <= 1 FROM nats.main.connections(state := 'closed', max_rows := 1);
+----
+true
+
+# Every connection appears exactly once across pages.
+query T
+SELECT count(*) = count(DISTINCT cid) AND count(*) >= 2 FROM nats.main.connections(skip := 0);
+----
+true
+
+# Through $SYS (system user sees every account).
+query T
+SELECT name FROM nats.main.connections(secret_name := 'natssys', account := 'APP') WHERE name = 'fixture-publisher';
+----
+fixture-publisher
+
+# The token server's single named client.
+query TT
+SELECT name, kind FROM nats.main.connections(secret_name := 'natstok') WHERE name = 'token-client';
+----
+token-client	Client
+
+# ---------------------------------------------------------------- routes, gateways, leafnodes (none in the fixture)
+
+query III
+SELECT (SELECT count(*) FROM nats.main.routes()), (SELECT count(*) FROM nats.main.gateways()), (SELECT count(*) FROM nats.main.leafnodes());
+----
+0	0	0
+
+query III
+SELECT (SELECT count(*) FROM nats.main.routes(secret_name := 'natssys')), (SELECT count(*) FROM nats.main.gateways(secret_name := 'natssys')), (SELECT count(*) FROM nats.main.leafnodes(secret_name := 'natssys'));
+----
+0	0	0
+
+# ---------------------------------------------------------------- subscriptions (/subsz)
+
+# Who receives orders.eu.created in APP: the fixture's orders.> subscription
+# and the ORDERS stream's own capture subscription.
+query TTI
+SELECT account, subject, count(*) FROM nats.main.subscriptions(account := 'APP', test_subject := 'orders.eu.created') GROUP BY ALL ORDER BY subject;
+----
+APP	orders.>	2
+
+query TTI
+SELECT account, subject, count(*) FROM nats.main.subscriptions(secret_name := 'natssys', account := 'APP', test_subject := 'orders.eu.created') GROUP BY ALL;
+----
+APP	orders.>	2
+
+query T
+SELECT count(*) > 50 AND count(DISTINCT account) >= 2 FROM nats.main.subscriptions();
+----
+true
+
+query T
+SELECT num_subscriptions > 50 AND num_matches > 0 FROM nats.main.subscription_stats();
+----
+true
+
+# ---------------------------------------------------------------- accounts, account_stats
+
+query TTT
+SELECT account, is_system, jetstream_enabled FROM nats.main.accounts() ORDER BY account;
+----
+$G	false	false
+APP	false	true
+SYS	true	false
+
+query TTT
+SELECT account, is_system, client_connections >= 1 FROM nats.main.accounts(secret_name := 'natssys') WHERE account IN ('APP', 'SYS') ORDER BY account;
+----
+APP	false	true
+SYS	true	true
+
+query TTT
+SELECT account, connections >= 1, received_msgs >= 25000 FROM nats.main.account_stats() WHERE account = 'APP';
+----
+APP	true	true
+
+query T
+SELECT account FROM nats.main.account_stats(secret_name := 'natssys') ORDER BY account;
+----
+$G
+APP
+SYS
+
+query T
+SELECT count(*) < 3 FROM nats.main.account_stats(include_unused := false);
+----
+true
+
+# ---------------------------------------------------------------- JetStream monitoring (/jsz)
+
+query TIII
+SELECT enabled, streams, consumers, accounts FROM nats.main.jetstream_servers();
+----
+true	5	2	1
+
+query TI
+SELECT enabled, streams FROM nats.main.jetstream_servers(secret_name := 'natssys');
+----
+true	5
+
+query TTIIII
+SELECT account, stream, messages, first_seq, last_seq, consumer_count FROM nats.main.jsz_streams() ORDER BY stream;
+----
+APP	BULK	25000	1	25000	0
+APP	EVENTS	4	1	4	0
+APP	KV_config	6	1	6	0
+APP	OBJ_files	7	1	9	0
+APP	ORDERS	10	1	10	2
+
+query TTTIIII
+SELECT account, stream, consumer, delivered_stream_seq, ack_floor_stream_seq, num_pending, lag FROM nats.main.jsz_consumers(secret_name := 'natssys') ORDER BY consumer;
+----
+APP	ORDERS	audit	0	0	10	10
+APP	ORDERS	shipper	3	3	2	2
+
+query I
+SELECT count(*) FROM nats.main.jsz_streams(account := 'SYS');
+----
+0
+
+# ---------------------------------------------------------------- health (/healthz)
+
+query TTTT
+SELECT server_name, status, healthy, error FROM nats.main.health();
+----
+vgi-nats-fixture	ok	true	NULL
+
+query TT
+SELECT status, healthy FROM nats.main.health(secret_name := 'natssys', js_server_only := true);
+----
+ok	true
+
+query TT
+SELECT status, healthy FROM nats.main.health(js_enabled_only := true);
+----
+ok	true
+
+# skip is the server-side offset.
+query T
+SELECT (SELECT count(*) FROM nats.main.connections(skip := 1)) = (SELECT count(*) FROM nats.main.connections()) - 1;
+----
+true
+
+query I
+SELECT count(*) FROM nats.main.jsz_consumers(account := 'SYS');
+----
+0
+
+query I
+SELECT count(*) FROM nats.main.jsz_consumers(account := 'APP');
+----
+2

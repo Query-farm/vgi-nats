@@ -1,0 +1,121 @@
+# name: test/sql/errors.test
+# description: Secret handling and error messages
+# group: [nats]
+
+require vgi
+
+require-env NATS_WORKER
+
+require-env NATS_URL
+
+require-env NATS_MON_URL
+
+require-env NATS_TOKEN_URL
+
+require-env NATS_TOKEN_MON_URL
+
+require-env NATS_BOUNDARY
+
+statement ok
+ATTACH 'nats' (TYPE vgi, LOCATION '{NATS_WORKER}');
+
+# The default secret: account APP over user/password, with HTTP monitoring.
+statement ok
+CREATE SECRET (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', MONITORING_URL '{NATS_MON_URL}');
+
+# Scoped, so they never compete with the default; selected with secret_name.
+statement ok
+CREATE SECRET natssys (TYPE nats, SERVERS '{NATS_URL}', USER 'sys', PASSWORD 'sys-pass', SCOPE 'nats://sys');
+
+statement ok
+CREATE SECRET natsnk (TYPE nats, SERVERS '{NATS_URL}', NKEY_SEED 'SUAA5KW3YKG764K5R5FABZUV73YJ7CGKJEDOEYI55P3TUCKHWVETOI3KHQ', SCOPE 'nats://nkey');
+
+statement ok
+CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-token', MONITORING_URL '{NATS_TOKEN_MON_URL}', SCOPE 'nats://token');
+
+
+# ---------------------------------------------------------------- secrets are redacted
+
+query T
+SELECT bool_or(secret_string LIKE '%app-pass%' OR secret_string LIKE '%sys-pass%' OR secret_string LIKE '%fixture-token%' OR secret_string LIKE '%SUAA5KW3%') FROM duckdb_secrets() WHERE type = 'nats';
+----
+false
+
+# ---------------------------------------------------------------- errors
+
+statement error
+SELECT * FROM nats.main.messages('NO_SUCH_STREAM');
+----
+<REGEX>:.*stream "NO_SUCH_STREAM" not found.*
+
+statement error
+SELECT * FROM nats.main.stream_subjects('NO_SUCH_STREAM');
+----
+<REGEX>:.*stream "NO_SUCH_STREAM" not found.*
+
+statement error
+SELECT * FROM nats.main.kv_entries('nobucket');
+----
+<REGEX>:.*KV bucket "nobucket" not found.*
+
+statement error
+SELECT * FROM nats.main.objects('nobucket');
+----
+<REGEX>:.*object store "nobucket" not found.*
+
+statement error
+SELECT * FROM nats.main.messages('ORDERS', subject := 'orders..x');
+----
+<REGEX>:.*invalid subject.*
+
+statement error
+SELECT * FROM nats.main.streams(secret_name := 'missing_secret');
+----
+<REGEX>:.*missing_secret.*
+
+# The token server has no JetStream.
+statement error
+SELECT * FROM nats.main.streams(secret_name := 'natstok');
+----
+<REGEX>:.*no JetStream API responded.*
+
+# An application-account user without MONITORING_URL cannot use the $SYS server API.
+statement error
+SELECT * FROM nats.main.server_info(secret_name := 'natsnk');
+----
+<REGEX>:.*MONITORING_URL.*system-account.*
+
+statement ok
+CREATE SECRET badauth (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'wrong', SCOPE 'nats://bad');
+
+statement error
+SELECT * FROM nats.main.streams(secret_name := 'badauth');
+----
+<REGEX>:.*(?i)authorization.*
+
+statement ok
+CREATE SECRET twoauth (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', TOKEN 'x', SCOPE 'nats://two');
+
+statement error
+SELECT * FROM nats.main.streams(secret_name := 'twoauth');
+----
+<REGEX>:.*exactly one authentication method.*
+
+statement ok
+CREATE SECRET badurl (TYPE nats, SERVERS 'http://127.0.0.1:1', SCOPE 'nats://badurl');
+
+statement error
+SELECT * FROM nats.main.streams(secret_name := 'badurl');
+----
+<REGEX>:.*SERVERS must be nats://.*
+
+statement error
+SELECT * FROM nats.main.connections(state := 'sleeping');
+----
+<REGEX>:.*
+
+# The worker's own catalog: every function is listed.
+query I
+SELECT count(DISTINCT function_name) FROM duckdb_functions() WHERE database_name = 'nats';
+----
+22

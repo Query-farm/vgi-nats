@@ -1,0 +1,145 @@
+# name: test/sql/jetstream.test
+# description: JetStream streams, subjects, consumers and account usage
+# group: [nats]
+
+require vgi
+
+require-env NATS_WORKER
+
+require-env NATS_URL
+
+require-env NATS_MON_URL
+
+require-env NATS_TOKEN_URL
+
+require-env NATS_TOKEN_MON_URL
+
+require-env NATS_BOUNDARY
+
+statement ok
+LOAD json;
+
+statement ok
+ATTACH 'nats' (TYPE vgi, LOCATION '{NATS_WORKER}');
+
+# The default secret: account APP over user/password, with HTTP monitoring.
+statement ok
+CREATE SECRET (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', MONITORING_URL '{NATS_MON_URL}');
+
+# Scoped, so they never compete with the default; selected with secret_name.
+statement ok
+CREATE SECRET natssys (TYPE nats, SERVERS '{NATS_URL}', USER 'sys', PASSWORD 'sys-pass', SCOPE 'nats://sys');
+
+statement ok
+CREATE SECRET natsnk (TYPE nats, SERVERS '{NATS_URL}', NKEY_SEED 'SUAA5KW3YKG764K5R5FABZUV73YJ7CGKJEDOEYI55P3TUCKHWVETOI3KHQ', SCOPE 'nats://nkey');
+
+statement ok
+CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-token', MONITORING_URL '{NATS_TOKEN_MON_URL}', SCOPE 'nats://token');
+
+
+# ---------------------------------------------------------------- account_info
+
+query IIITT
+SELECT streams, consumers, api_level >= 1, max_storage_bytes IS NULL, storage_bytes > 0 FROM nats.main.account_info();
+----
+5	2	true	true	true
+
+# ---------------------------------------------------------------- streams
+
+query TTTTTI
+SELECT stream, kind, subjects::VARCHAR, retention, storage, replicas FROM nats.main.streams() ORDER BY stream;
+----
+BULK	stream	[bulk.*]	limits	file	1
+EVENTS	stream	[events.*, audit.>]	limits	memory	1
+KV_config	kv	[$KV.config.>]	limits	file	1
+OBJ_files	object_store	[$O.files.C.>, $O.files.M.>]	limits	file	1
+ORDERS	stream	[orders.>]	limits	file	1
+
+query TIIIIIITT
+SELECT stream, messages, first_seq, last_seq, num_subjects, consumer_count, num_deleted, first_ts <= last_ts, allow_direct FROM nats.main.streams() WHERE kind = 'stream' ORDER BY stream;
+----
+BULK	25000	1	25000	7	0	0	true	false
+EVENTS	4	1	4	3	0	0	true	false
+ORDERS	10	1	10	5	2	0	true	true
+
+query TTRTI
+SELECT stream, description, duplicate_window_seconds, discard, max_msgs FROM nats.main.streams() WHERE stream IN ('ORDERS', 'EVENTS') ORDER BY stream;
+----
+EVENTS	NULL	120.0	old	1000
+ORDERS	Order lifecycle events	60.0	old	NULL
+
+query TT
+SELECT stream, json_extract_string(config, '$.name') = stream FROM nats.main.streams() WHERE stream = 'ORDERS';
+----
+ORDERS	true
+
+# The NKey user is in the same account.
+query I
+SELECT count(*) FROM nats.main.streams(secret_name := 'natsnk');
+----
+5
+
+# ---------------------------------------------------------------- stream_subjects
+
+query TI
+SELECT subject, messages FROM nats.main.stream_subjects('ORDERS') ORDER BY subject;
+----
+orders.apac.created	1
+orders.eu.created	3
+orders.eu.shipped	2
+orders.us.created	3
+orders.us.shipped	1
+
+query TI
+SELECT subject, messages FROM nats.main.stream_subjects('ORDERS', filter := 'orders.*.shipped') ORDER BY subject;
+----
+orders.eu.shipped	2
+orders.us.shipped	1
+
+query TI
+SELECT subject, messages FROM nats.main.stream_subjects('EVENTS') ORDER BY subject;
+----
+audit.user.created	1
+events.login	2
+events.logout	1
+
+query II
+SELECT count(*), sum(messages) FROM nats.main.stream_subjects('BULK');
+----
+7	25000
+
+# ---------------------------------------------------------------- consumers
+
+query TTTTTTTIIIIIITT
+SELECT stream, consumer, durable, push, filter_subjects::VARCHAR, ack_policy, deliver_policy, max_deliver, delivered_stream_seq,
+       ack_floor_stream_seq, num_pending, lag, num_ack_pending, paused, last_delivered IS NULL
+FROM nats.main.consumers() ORDER BY consumer;
+----
+ORDERS	audit	true	false	[]	explicit	all	NULL	0	0	10	10	0	false	true
+ORDERS	shipper	true	false	[orders.*.shipped]	explicit	all	5	3	3	2	2	0	false	false
+
+query TT
+SELECT consumer, description FROM nats.main.consumers(stream := 'ORDERS') ORDER BY consumer;
+----
+audit	NULL
+shipper	Ships orders
+
+query I
+SELECT count(*) FROM nats.main.consumers(stream := 'BULK');
+----
+0
+
+# Reading messages never leaves a consumer behind or moves a durable one.
+statement ok
+SELECT count(*) FROM nats.main.messages('ORDERS');
+
+query TIII
+SELECT consumer, delivered_stream_seq, ack_floor_stream_seq, lag FROM nats.main.consumers() ORDER BY consumer;
+----
+audit	0	0	10
+shipper	3	3	2
+
+query I
+SELECT consumer_count FROM nats.main.streams() WHERE stream = 'ORDERS';
+----
+2

@@ -1,0 +1,236 @@
+# name: test/sql/messages.test
+# description: Non-destructive message reads with pushdown
+# group: [nats]
+
+require vgi
+
+require-env NATS_WORKER
+
+require-env NATS_URL
+
+require-env NATS_MON_URL
+
+require-env NATS_TOKEN_URL
+
+require-env NATS_TOKEN_MON_URL
+
+require-env NATS_BOUNDARY
+
+statement ok
+ATTACH 'nats' (TYPE vgi, LOCATION '{NATS_WORKER}');
+
+# The default secret: account APP over user/password, with HTTP monitoring.
+statement ok
+CREATE SECRET (TYPE nats, SERVERS '{NATS_URL}', USER 'app', PASSWORD 'app-pass', MONITORING_URL '{NATS_MON_URL}');
+
+# Scoped, so they never compete with the default; selected with secret_name.
+statement ok
+CREATE SECRET natssys (TYPE nats, SERVERS '{NATS_URL}', USER 'sys', PASSWORD 'sys-pass', SCOPE 'nats://sys');
+
+statement ok
+CREATE SECRET natsnk (TYPE nats, SERVERS '{NATS_URL}', NKEY_SEED 'SUAA5KW3YKG764K5R5FABZUV73YJ7CGKJEDOEYI55P3TUCKHWVETOI3KHQ', SCOPE 'nats://nkey');
+
+statement ok
+CREATE SECRET natstok (TYPE nats, SERVERS '{NATS_TOKEN_URL}', TOKEN 'fixture-token', MONITORING_URL '{NATS_TOKEN_MON_URL}', SCOPE 'nats://token');
+
+
+# ---------------------------------------------------------------- full read
+
+query ITTII
+SELECT seq, subject, payload_text, size_bytes, cardinality(headers) FROM nats.main.messages('ORDERS') ORDER BY seq;
+----
+1	orders.eu.created	{"id":1,"region":"eu","amount":10.5}	36	1
+2	orders.us.created	{"id":2,"region":"us","amount":20}	34	1
+3	orders.eu.shipped	{"id":1}	8	0
+4	orders.us.created	{"id":3,"region":"us","amount":7.25}	36	0
+5	orders.eu.created	NULL	4	0
+6	orders.us.shipped	{"id":2}	8	3
+7	orders.eu.created	{"id":4,"region":"eu","amount":99}	34	0
+8	orders.eu.shipped	{"id":4}	8	0
+9	orders.apac.created	{"id":5,"region":"apac","amount":1}	35	0
+10	orders.us.created	(empty)	0	0
+
+# Binary payloads stay bytes; payload_text is NULL when not UTF-8.
+query IT
+SELECT seq, hex(payload) FROM nats.main.messages('ORDERS') WHERE seq = 5;
+----
+5	FFFE0001
+
+# Headers: multi-valued headers are joined with ', '.
+query TTT
+SELECT headers['X-Tenant'], headers['Nats-Msg-Id'], headers['X-Trace'] FROM nats.main.messages('ORDERS') WHERE seq = 6;
+----
+globex	ord-6	a, b
+
+query T
+SELECT bool_and(stream = 'ORDERS') AND bool_and(timestamp IS NOT NULL) AND count(*) = 10 FROM nats.main.messages('ORDERS');
+----
+true
+
+# Timestamps are increasing with the sequence.
+query T
+SELECT bool_and(ok) FROM (SELECT timestamp >= lag(timestamp) OVER (ORDER BY seq) OR seq = 1 AS ok FROM nats.main.messages('ORDERS'));
+----
+true
+
+# ---------------------------------------------------------------- arguments
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') ORDER BY seq;
+----
+1
+3
+5
+7
+8
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', subject := 'orders.*.shipped') ORDER BY seq;
+----
+3
+6
+8
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', start_seq := 8) ORDER BY seq;
+----
+8
+9
+10
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', max_msgs := 3) ORDER BY seq;
+----
+1
+2
+3
+
+# start_time: everything stored after the fixture's boundary (between seq 5 and 6).
+query I
+SELECT seq FROM nats.main.messages('ORDERS', start_time := TIMESTAMPTZ '{NATS_BOUNDARY}') ORDER BY seq;
+----
+6
+7
+8
+9
+10
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', subject := 'orders.us.>', start_seq := 3, max_msgs := 2) ORDER BY seq;
+----
+4
+6
+
+query I
+SELECT count(*) FROM nats.main.messages('ORDERS', start_seq := 11);
+----
+0
+
+query II
+SELECT count(*), sum(seq) FROM nats.main.messages('EVENTS', subject := 'events.login');
+----
+2	5
+
+# ---------------------------------------------------------------- pushed-down WHERE (applied exactly)
+
+query IT
+SELECT seq, subject FROM nats.main.messages('ORDERS') WHERE subject = 'orders.eu.shipped' ORDER BY seq;
+----
+3	orders.eu.shipped
+8	orders.eu.shipped
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE subject IN ('orders.apac.created', 'orders.us.shipped') ORDER BY seq;
+----
+6
+9
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE seq > 7 ORDER BY seq;
+----
+8
+9
+10
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE seq BETWEEN 4 AND 6 ORDER BY seq;
+----
+4
+5
+6
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE seq = 2 OR seq = 9 ORDER BY seq;
+----
+2
+9
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE timestamp >= TIMESTAMPTZ '{NATS_BOUNDARY}' AND subject = 'orders.eu.created' ORDER BY seq;
+----
+7
+
+# Predicates the read cannot narrow are still applied exactly.
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE payload_text LIKE '%apac%';
+----
+9
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE headers['X-Tenant'] = 'globex' ORDER BY seq;
+----
+2
+6
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE payload_text IS NULL;
+----
+5
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE size_bytes = 0;
+----
+10
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS') WHERE prefix(subject, 'orders.us') AND seq < 6 ORDER BY seq;
+----
+2
+4
+
+query I
+SELECT seq FROM nats.main.messages('ORDERS', subject := 'orders.eu.*') WHERE subject = 'orders.us.created';
+----
+
+query I
+SELECT count(*) FROM nats.main.messages('ORDERS') WHERE seq > 100;
+----
+0
+
+# ---------------------------------------------------------------- many batches (25,000 messages, 2,000 per batch)
+
+query III
+SELECT count(*), sum(seq), count(DISTINCT seq) FROM nats.main.messages('BULK');
+----
+25000	312512500	25000
+
+query IIII
+SELECT count(*), min(seq), max(seq), sum(seq) FROM nats.main.messages('BULK') WHERE seq BETWEEN 100 AND 20099 AND subject IN ('bulk.1', 'bulk.2');
+----
+5715	100	20099	57725785
+
+query TI
+SELECT subject, count(*) FROM nats.main.messages('BULK', subject := 'bulk.0') GROUP BY subject;
+----
+bulk.0	3571
+
+query IT
+SELECT seq, payload_text FROM nats.main.messages('BULK', start_seq := 24999) ORDER BY seq;
+----
+24999	row-24999
+25000	row-25000
+
+query II
+SELECT count(*), max(seq) FROM nats.main.messages('BULK', max_msgs := 4500);
+----
+4500	4500
