@@ -35,9 +35,10 @@ type category struct {
 // SchemaCategories group functions in docs and agent tools. Every function's
 // vgi.category must name one of these.
 var SchemaCategories = []category{
-	{Name: "text", Title: "Text", Description: "Functions that build or transform strings."},
-	{Name: "generators", Title: "Generators", Description: "Table functions that generate rows."},
-	{Name: "api", Title: "REST APIs", Description: "Table functions that read from HTTP APIs."},
+	{Name: "monitoring", Title: "Server Monitoring", Description: "Servers, connections, routes, gateways, leaf nodes, subscriptions, accounts, JetStream usage and health, from the HTTP monitoring endpoints or the $SYS API."},
+	{Name: "jetstream", Title: "JetStream Streams", Description: "Account usage, streams, subjects, consumers with lag, and non-destructive message reads."},
+	{Name: "kv", Title: "Key-Value Stores", Description: "JetStream KV buckets, current values and revision history."},
+	{Name: "objects", Title: "Object Stores", Description: "JetStream object stores and the objects in them."},
 }
 
 // mustJSON marshals v, panicking on failure (only static data is passed).

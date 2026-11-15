@@ -1,7 +1,8 @@
-// Package nats assembles the example functions into a catalog.
+// Package nats exposes NATS server monitoring and read-only JetStream
+// (streams, consumers, messages, KV and object stores) as a VGI catalog.
 //
-// To add a function: write it (see greet.go / sequence.go / fetch_items.go),
-// then register it in NewWorker below.
+// To add a function: write it (see monitor.go, jetstream.go or scan.go), then
+// register it in NewWorker below.
 //
 // Run it:
 //
@@ -20,7 +21,10 @@ import (
 
 // allExamples lists every function's examples for the schema-level tag.
 func allExamples() []exampleQuery {
-	return exampleQueries(greetExamples, greetWithStyleExamples, sequenceExamples, fetchExamples)
+	return exampleQueries(serverInfoExamples, connectionsExamples, routesExamples, gatewaysExamples, leafExamples,
+		subsExamples, subStatsExamples, accountsExamples, accStatsExamples, jsServersExamples, jszStreamsExamples,
+		jszConsumersExamples, healthExamples, accountInfoExamples, streamsExamples, subjectsExamples, consumersExamples,
+		messagesExamples, kvBucketsExamples, kvEntriesExamples, objBucketsExamples, objectsExamples)
 }
 
 // NewWorker builds the worker: one catalog, one main schema. Extra options
@@ -37,9 +41,15 @@ func NewWorker(opts ...vgi.WorkerOption) *vgi.Worker {
 		vgi.WithSecretTypes(APISecretType),
 	}
 	w := vgi.NewWorker(append(base, opts...)...)
-	w.RegisterScalar(vgi.AsScalarFunction[greetArgs](&Greet{}))
-	w.RegisterScalar(vgi.AsScalarFunction[greetWithStyleArgs](&GreetWithStyle{}))
-	w.RegisterTable(NewSequenceTable())
-	w.RegisterTable(NewFetchItems())
+	for _, f := range []vgi.TableFunction{
+		newServerInfo(), newConnections(), newRoutes(), newGateways(), newLeafnodes(), newSubscriptions(),
+		newSubscriptionStats(), newAccounts(), newAccountStats(), newJetStreamServers(), newJszStreams(),
+		newJszConsumers(), newHealth(),
+		newAccountInfo(), newStreams(), newStreamSubjects(), newConsumers(), newKVBuckets(), newObjectStores(), newObjects(),
+	} {
+		w.RegisterTable(f)
+	}
+	w.RegisterTable(vgi.AsTableFunction[ScanState](&MessagesFunc{}))
+	w.RegisterTable(vgi.AsTableFunction[ScanState](&KVEntriesFunc{}))
 	return w
 }
