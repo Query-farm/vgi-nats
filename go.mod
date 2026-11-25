@@ -5,8 +5,8 @@ go 1.26.0
 replace github.com/google/flatbuffers => github.com/rustyconover/flatbuffers v25.12.20-0.20261026151427-0acd09bcd1ff+incompatible
 
 require (
-	github.com/Query-farm/vgi-go v0.42.2
-	github.com/Query-farm/vgi-rpc-go v0.37.0
+	github.com/Query-farm/vgi-go v0.44.1
+	github.com/Query-farm/vgi-rpc-go v0.38.1
 	github.com/apache/arrow-go/v18 v18.7.0
 	github.com/nats-io/nats-server/v2 v2.15.3
 	github.com/nats-io/nats.go v1.55.0
@@ -16,11 +16,15 @@ require (
 )
 
 require (
+	github.com/MicahParks/jwkset v0.11.3 // indirect
+	github.com/MicahParks/keyfunc/v3 v3.8.1 // indirect
+	github.com/Query-farm/vgi-rpc-go/vgirpc/jwtauth v0.17.1 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.9.0-default-no-op // indirect
 	github.com/apache/thrift v0.24.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
